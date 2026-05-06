@@ -1,0 +1,145 @@
+/* Foreman TUI Theme */
+
+Screen {
+    background: $surface;
+}
+
+Header {
+    background: $primary;
+    color: $text;
+}
+
+/* Layout */
+.sidebar {
+    width: 1fr;
+    min-width: 20;
+    max-width: 30;
+    border-right: solid $primary;
+}
+
+.sidebar-right {
+    width: 1fr;
+    min-width: 25;
+    max-width: 35;
+    border-left: solid $primary;
+}
+
+.main {
+    width: 3fr;
+}
+
+/* Directory tree */
+#dir-tree {
+    height: 1fr;
+}
+
+/* Chat messages */
+.msg {
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+.msg-user {
+    border-left: tall $primary;
+}
+
+.msg-assistant {
+    border-left: tall $success;
+}
+
+.msg-system {
+    color: $text-muted;
+    border-left: tall $accent;
+}
+
+.msg-compact {
+    background: $warning 15%;
+    border-left: tall $warning;
+    padding: 1 1;
+}
+
+.msg-error {
+    border-left: tall $error;
+}
+
+/* Input */
+InputBar {
+    height: auto;
+    max-height: 15;
+    border-top: solid $primary;
+    padding: 0 1;
+}
+
+#input-area {
+    height: 3;
+    width: 1fr;
+}
+
+/* Command palette */
+CommandPalette {
+    display: none;
+    height: auto;
+    max-height: 10;
+    background: $surface;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+CommandPalette.visible {
+    display: block;
+}
+
+/* Context stats */
+ContextStatsPanel {
+    height: auto;
+    width: 100%;
+    padding: 0 1;
+}
+
+/* Modal screens */
+ModelSelectorScreen {
+    background: $surface 80%;
+    align: center middle;
+}
+
+#model-selector {
+    width: 120;
+    height: 35;
+    background: $surface;
+    border: tall $primary;
+    padding: 1 2;
+}
+
+#model-title {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#model-search {
+    margin-bottom: 1;
+    height: 3;
+    border: tall $primary;
+}
+
+#model-list {
+    height: 1fr;
+}
+
+HelpScreen {
+    background: $surface 80%;
+    align: center middle;
+}
+
+#help-box {
+    width: 70;
+    height: auto;
+    max-height: 80%;
+    background: $surface;
+    border: tall $primary;
+    padding: 1 2;
+}
+
+/* Footer */
+Footer {
+    background: $primary;
+}
