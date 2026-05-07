@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -12,13 +14,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "primary_model": "openrouter/xiaomi/mimo-v2.5-pro",
     "secondary_model": "openrouter/xiaomi/mimo-v2.5",
     "compact_threshold": 0.70,
-    "context_window": 128_000,
     "output_reserve": 16_384,
     "max_summary_tokens": 2_000,
     "recent_messages_to_keep": 6,  # 3 exchanges
-    "encoding": "o200k_base",
     "theme": "dark",
 }
+
+
+def get_global_foreman_dir() -> Path:
+    """Get the global Foreman data directory (platform-specific)."""
+    if platform.system() == "Windows":
+        # Check for %APPDATA%
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Foreman"
+    return Path.home() / ".foreman"
+
 
 
 @dataclass
@@ -27,11 +38,9 @@ class ForemanConfig:
     primary_model: str = DEFAULT_CONFIG["primary_model"]
     secondary_model: str = DEFAULT_CONFIG["secondary_model"]
     compact_threshold: float = DEFAULT_CONFIG["compact_threshold"]
-    context_window: int = DEFAULT_CONFIG["context_window"]
     output_reserve: int = DEFAULT_CONFIG["output_reserve"]
     max_summary_tokens: int = DEFAULT_CONFIG["max_summary_tokens"]
     recent_messages_to_keep: int = DEFAULT_CONFIG["recent_messages_to_keep"]
-    encoding: str = DEFAULT_CONFIG["encoding"]
     theme: str = DEFAULT_CONFIG["theme"]
 
     @classmethod

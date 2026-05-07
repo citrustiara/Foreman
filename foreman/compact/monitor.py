@@ -53,7 +53,7 @@ class CompactMonitor:
         self._running = False
         self._task: asyncio.Task | None = None
 
-    def check(self, session: Session, model: str = "gpt-4o") -> bool:
+    def check(self, session: Session, model: str) -> bool:
         """Check if compaction should occur based on current session tokens."""
         messages = [{"role": m.role, "content": m.content} for m in session.messages]
         token_count = self.token_counter.count_message_tokens(messages, model)
@@ -79,7 +79,7 @@ class CompactMonitor:
         """Reset the compact flag after compaction is complete."""
         self._should_compact = False
 
-    async def start_monitoring(self, session_getter, model: str = "gpt-4o") -> None:
+    async def start_monitoring(self, session_getter, model: str) -> None:
         """Start background monitoring loop.
 
         session_getter: async callable that returns the current session
@@ -99,7 +99,7 @@ class CompactMonitor:
         if self._task and not self._task.done():
             self._task.cancel()
 
-    def start_background(self, session_getter, model: str = "gpt-4o") -> asyncio.Task:
+    def start_background(self, session_getter, model: str) -> asyncio.Task:
         """Start monitoring as a background asyncio task."""
         self._task = asyncio.create_task(
             self.start_monitoring(session_getter, model)

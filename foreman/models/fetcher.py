@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from foreman.config import get_global_foreman_dir
+
 
 logger = logging.getLogger("foreman.models.fetcher")
 
@@ -60,18 +62,26 @@ async def fetch_openrouter_models() -> list[dict[str, Any]]:
         return []
 
 
-def save_models(models: list[dict], foreman_dir: Path) -> None:
-    """Save models to .foreman/openrouter_models.json."""
+def save_models(models: list[dict], foreman_dir: Path | None = None) -> None:
+    """Save models to openrouter_models.json (defaults to global dir)."""
+    if foreman_dir is None:
+        foreman_dir = get_global_foreman_dir()
+    
     foreman_dir.mkdir(parents=True, exist_ok=True)
+
     path = foreman_dir / "openrouter_models.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"models": models, "fetched_count": len(models)}, f, indent=2)
     logger.info("Saved %d models to %s", len(models), path)
 
 
-def load_models(foreman_dir: Path) -> list[dict]:
-    """Load cached models from disk."""
+def load_models(foreman_dir: Path | None = None) -> list[dict]:
+    """Load cached models from disk (defaults to global dir)."""
+    if foreman_dir is None:
+        foreman_dir = get_global_foreman_dir()
+    
     path = foreman_dir / "openrouter_models.json"
+
     if not path.exists():
         return []
     try:

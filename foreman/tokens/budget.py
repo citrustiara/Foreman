@@ -3,47 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-
-# Default context windows for known models
-MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "gpt-4o": 128_000,
-    "gpt-4o-mini": 128_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "gpt-3.5-turbo": 16_385,
-    "gemini/gemini-2.5-pro": 1_000_000,
-    "gemini/gemini-2.5-flash": 1_000_000,
-    "deepseek/deepseek-chat": 131_072,
-    "claude-sonnet-4-20250514": 200_000,
-    "anthropic/claude-sonnet-4-20250514": 200_000,
-}
+if TYPE_CHECKING:
+    from pathlib import Path
+    import asyncio
+    from foreman.brain.session import Session
 
 
 def get_context_window(model: str, fallback: int = 128_000) -> int:
     """Get context window for a model, with fallback.
 
-    Checks hardcoded presets first, then OpenRouter cache.
+    Checks OpenRouter cache first, then falls back to provider heuristics.
     """
-    # Direct match
-    if model in MODEL_CONTEXT_WINDOWS:
-        return MODEL_CONTEXT_WINDOWS[model]
-    # Partial match (e.g., "gemini/gemini-2.5-pro" matches "gemini-2.5-pro")
-    model_lower = model.lower()
-    for key, window in MODEL_CONTEXT_WINDOWS.items():
-        if key.lower() in model_lower or model_lower in key.lower():
-            return window
     # Check OpenRouter cache
     try:
         from foreman.models.fetcher import load_models
-        from pathlib import Path
-        import os
-        foreman_dir = Path.cwd() / ".foreman"
-        for m in load_models(foreman_dir):
-            if m["id"] == model or f"openrouter/{m['id']}" == model:
+        for m in load_models():
+            if m["id"] == model or f"openrouter/{m['id']}" == model or model == m.get("name"):
                 return m.get("context_window", fallback)
     except Exception:
         pass
+
     return fallback
 
 
@@ -59,7 +40,7 @@ class BudgetWarning:
 class TokenBudget:
     """Tracks token allocation across context budget regions."""
 
-    model: str = "gpt-4o"
+    model: str
     context_window: int = 128_000
     system_prompt_tokens: int = 0
     mermaid_tokens: int = 0
@@ -123,11 +104,13 @@ class TokenBudget:
 
     def format_bar(self, width: int = 20) -> str:
         """Format an ASCII progress bar showing session usage."""
-        ratio = self.session_usage_ratio
+        ratio = self.usage_ratio
         filled = int(ratio * width)
+        if self.used > 0 and filled == 0:
+            filled = 1
         empty = width - filled
         bar = "#" * filled + "." * empty
         pct = int(ratio * 100)
-        used_k = self.session_tokens // 1000
-        total_k = self.available_for_session // 1000
+        used_k = self.used // 1000
+        total_k = self.context_window // 1000
         return f"{bar} {pct}% ({used_k}K/{total_k}K)"

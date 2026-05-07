@@ -24,7 +24,8 @@ def _new_session_id() -> str:
 class Message:
     """A single message in a session."""
 
-    __slots__ = ("role", "content", "timestamp", "token_count", "model", "tool_calls")
+    __slots__ = ("role", "content", "timestamp", "token_count", "model", "tool_calls", "tool_call_id")
+
 
     def __init__(
         self,
@@ -34,13 +35,17 @@ class Message:
         token_count: int = 0,
         model: str | None = None,
         tool_calls: list[dict] | None = None,
+        tool_call_id: str | None = None,
     ):
+
         self.role = role
         self.content = content
         self.timestamp = timestamp or _utcnow()
         self.token_count = token_count
         self.model = model
         self.tool_calls = tool_calls or []
+        self.tool_call_id = tool_call_id
+
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -53,7 +58,10 @@ class Message:
             d["model"] = self.model
         if self.tool_calls:
             d["tool_calls"] = self.tool_calls
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
         return d
+
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Message":
@@ -64,7 +72,9 @@ class Message:
             token_count=data.get("token_count", 0),
             model=data.get("model"),
             tool_calls=data.get("tool_calls", []),
+            tool_call_id=data.get("tool_call_id"),
         )
+
 
 
 class Session:

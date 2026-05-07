@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
+import aiofiles.os
 
 from foreman.brain.session import Session, Message, SessionStore
 from foreman.compact.monitor import CompactEvent
@@ -23,7 +24,7 @@ async def compact_session(
     store: SessionStore,
     summarizer: Summarizer,
     token_counter: TokenCounter,
-    model: str = "gpt-4o",
+    model: str,
     recent_to_keep: int = 6,
     summary_model: ModelProfile | None = None,
     compactions_dir: Path | None = None,
@@ -109,7 +110,7 @@ async def compact_session_self(
     summarizer: Summarizer,
     token_counter: TokenCounter,
     primary_model: ModelProfile,
-    model: str = "gpt-4o",
+    model: str,
     recent_to_keep: int = 6,
     compactions_dir: Path | None = None,
 ) -> CompactEvent:
@@ -197,7 +198,6 @@ async def _archive_compaction(
     tmp_path = path.with_suffix(".json.tmp")
     async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
         await f.write(json.dumps(data, indent=2, ensure_ascii=False))
-    import aiofiles.os
     await aiofiles.os.replace(str(tmp_path), str(path))
 
     logger.info("Archived %d messages to %s", len(messages), path)

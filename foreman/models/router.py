@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Callable
 
 import litellm
 
@@ -53,24 +53,49 @@ class ModelRouter:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        delta_callback: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> litellm.ModelResponse:
         """Generate a completion with tool support. Returns the raw response object.
 
-        Use this for agentic loops where the model may call tools.
-        Check response.choices[0].message.tool_calls to see if tools were called.
+        If delta_callback is provided, it will stream the response and call the callback
+        with text chunks as they arrive.
         """
-        logger.info("Generating with tools (%s, %d messages)", profile.litellm_model, len(messages))
+        logger.info("Generating with tools (%s, %d messages, stream=%s)", 
+                    profile.litellm_model, len(messages), delta_callback is not None)
         try:
-            response = await litellm.acompletion(
-                model=profile.litellm_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=tools,
-                **kwargs,
-            )
-            return response
+            if delta_callback:
+                # Use streaming mode
+                response_stream = await litellm.acompletion(
+                    model=profile.litellm_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    stream=True,
+                    **kwargs,
+                )
+                
+                chunks = []
+                async for chunk in response_stream:
+                    chunks.append(chunk)
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        delta_callback(delta.content)
+                
+                # Reassemble into a full response object
+                return litellm.stream_chunk_builder(chunks)
+            else:
+                # Normal non-streaming mode
+                response = await litellm.acompletion(
+                    model=profile.litellm_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    **kwargs,
+                )
+                return response
         except Exception as e:
             logger.error("Generation with tools failed for %s: %s", profile.litellm_model, e)
             raise

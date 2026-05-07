@@ -27,19 +27,19 @@ class TokenCounter:
     def _resolve_encoding(model: str) -> str:
         """Map model name to tiktoken encoding name."""
         model_lower = model.lower()
-        if "gpt-4o" in model_lower or "gpt-5" in model_lower or "o200k" in model_lower:
+        # Newer models often use o200k
+        if any(x in model_lower for x in ["o200k", "o1-", "o3-"]):
             return "o200k_base"
-        if "gpt-4" in model_lower or "gpt-3.5" in model_lower:
-            return "cl100k_base"
-        # Safe fallback for Gemini, DeepSeek, Claude, etc.
+        
+        # Default to cl100k_base
         return "cl100k_base"
 
-    def count_tokens(self, text: str, model: str = "gpt-4o") -> int:
+    def count_tokens(self, text: str, model: str) -> int:
         """Count tokens in a string for a given model."""
         enc = self._get_encoding(model)
         return len(enc.encode(text))
 
-    def count_message_tokens(self, messages: list[dict[str, Any]], model: str = "gpt-4o") -> int:
+    def count_message_tokens(self, messages: list[dict[str, Any]], model: str) -> int:
         """Count tokens for a full message list, including per-message overhead."""
         enc = self._get_encoding(model)
         total = 0
@@ -60,7 +60,7 @@ class TokenCounter:
     def count_chat_tokens(
         self,
         messages: list[dict[str, Any]],
-        model: str = "gpt-4o",
+        model: str,
         system_prompt: str = "",
     ) -> int:
         """Count tokens for a chat including system prompt."""
@@ -76,13 +76,18 @@ class TokenCounter:
         self,
         messages: list[dict[str, Any]],
         max_tokens: int,
-        model: str = "gpt-4o",
+        model: str,
     ) -> tuple[list[dict[str, Any]], int]:
         """Drop oldest messages until under budget, preserving system prompt.
 
+        Assistant messages that contain ``tool_calls`` are bundled with their
+        subsequent tool-result messages and dropped as an atomic group.  Splitting
+        them would leave orphaned tool results (no matching tool_call_id on the
+        assistant side) and trigger a 400 from every provider.
+
         Returns (fitted_messages, dropped_count).
         """
-        # Separate system prompt if present
+        # Separate system messages from conversation messages
         system_msgs: list[dict[str, Any]] = []
         other_msgs: list[dict[str, Any]] = []
         for msg in messages:
@@ -91,14 +96,35 @@ class TokenCounter:
             else:
                 other_msgs.append(msg)
 
-        current = system_msgs + other_msgs
+        # Group conversation messages so that each assistant+tool_calls block is
+        # bundled with all its tool-result messages.
+        groups: list[list[dict[str, Any]]] = []
+        i = 0
+        while i < len(other_msgs):
+            msg = other_msgs[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Collect the tool results that follow
+                group = [msg]
+                tc_ids = {tc["id"] for tc in msg["tool_calls"] if isinstance(tc, dict) and "id" in tc}
+                j = i + 1
+                while j < len(other_msgs) and other_msgs[j].get("role") == "tool":
+                    group.append(other_msgs[j])
+                    tc_ids.discard(other_msgs[j].get("tool_call_id", ""))
+                    j += 1
+                groups.append(group)
+                i = j
+            else:
+                groups.append([msg])
+                i += 1
+
+        current = system_msgs + [m for g in groups for m in g]
         tokens = self.count_message_tokens(current, model)
 
         dropped = 0
-        while tokens > max_tokens and other_msgs:
-            removed = other_msgs.pop(0)
-            dropped += 1
-            current = system_msgs + other_msgs
+        while tokens > max_tokens and groups:
+            removed_group = groups.pop(0)
+            dropped += len(removed_group)
+            current = system_msgs + [m for g in groups for m in g]
             tokens = self.count_message_tokens(current, model)
 
         return current, dropped

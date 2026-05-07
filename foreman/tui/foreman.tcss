@@ -62,6 +62,22 @@ Header {
     border-left: tall $error;
 }
 
+.msg-tool-call {
+    color: $accent;
+    margin: 0;
+    padding: 0 1;
+    text-style: bold;
+}
+
+.msg-tool-result {
+    color: $text-muted;
+    margin: 0 0 1 2;
+    padding: 0 1;
+    border-left: solid $accent 20%;
+    height: auto;
+    max-height: 10;
+}
+
 /* Input */
 InputBar {
     height: auto;

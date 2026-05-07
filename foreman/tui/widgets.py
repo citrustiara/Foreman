@@ -37,8 +37,12 @@ COMMANDS = {
     "handoff": "Summarize and start a new session (resets tokens)",
     "clear": "Clear chat display",
     "new": "Start a new session",
+    "resume": "Resume a past session",
+    "approve": "Execute the pending implementation plan",
+    "reject": "Cancel the pending implementation plan",
     "quit": "Exit Foreman",
 }
+
 
 
 # ─── SubmitTextArea ───────────────────────────────────────────────
@@ -208,6 +212,11 @@ class InputBar(Vertical):
             palette.hide()
             self.post_message(self.UserMessage(content=text))
 
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Update palette whenever text changes."""
+        self._update_palette()
+
+
     def on_key(self, event: Key) -> None:
         """Handle arrow keys for palette navigation."""
         palette = self.query_one("#cmd-palette", CommandPalette)
@@ -233,8 +242,10 @@ class InputBar(Vertical):
                     palette.hide()
                 return
 
-        # Update palette on every keypress
-        self.call_after_refresh(self._update_palette)
+        # Update palette on navigation keys if visible
+        # (characters are handled by on_text_area_changed)
+        pass
+
 
     def _update_palette(self) -> None:
         try:
@@ -268,6 +279,11 @@ class ChatPanel(VerticalScroll):
         self.scroll_end()
         return widget
 
+    def update_assistant_message(self, widget: Static, content: str) -> None:
+        """Update an existing assistant message with new content."""
+        widget.update(Markdown(content))
+        self.scroll_end()
+
     def add_system_message(self, content: str) -> None:
         self.mount(Static(content, classes="msg msg-system"))
         self.scroll_end()
@@ -284,6 +300,14 @@ class ChatPanel(VerticalScroll):
 
     def add_error(self, content: str) -> None:
         self.mount(Static(f"[bold red]\u2717 Error:[/bold red] {content}", classes="msg msg-error"))
+        self.scroll_end()
+
+    def add_tool_call(self, content: str) -> None:
+        self.mount(Static(content, classes="msg-tool-call"))
+        self.scroll_end()
+
+    def add_tool_result(self, content: str) -> None:
+        self.mount(Static(content, classes="msg-tool-result"))
         self.scroll_end()
 
     def clear_chat(self) -> None:
@@ -312,6 +336,7 @@ class ContextStatsPanel(Static):
             f"  {bar}",
             f"  Context: {budget.context_window:,}",
             f"  System: {budget.system_prompt_tokens:,}",
+            f"  Arch: {budget.mermaid_tokens:,}",
             f"  Session: {budget.session_tokens:,}",
             f"  Total used: {total_used:,}",
             f"  Available: {budget.available_for_session:,}",
@@ -476,6 +501,8 @@ class HelpScreen(ModalScreen[None]):
                 "[cyan]/compact[/]     Force compaction (summary model)",
                 "[cyan]/compact-self[/] Force self-compaction (primary model)",
                 "[cyan]/implement[/]   Start implement pipeline",
+                "[cyan]/approve[/]     Approve pending plan",
+                "[cyan]/reject[/]      Reject pending plan",
                 "[cyan]/status[/]      Session and token stats",
                 "[cyan]/cost[/]        Cost breakdown",
                 "[cyan]/keys[/]        API key status",
@@ -483,6 +510,7 @@ class HelpScreen(ModalScreen[None]):
                 "[cyan]/fetch[/]       Fetch latest OpenRouter models",
                 "[cyan]/clear[/]       Clear chat",
                 "[cyan]/new[/]         New session",
+                "[cyan]/resume[/]      Resume a past session",
                 "[cyan]/quit[/]        Exit Foreman",
                 "",
                 "[bold]Keybindings[/]",
@@ -496,3 +524,72 @@ class HelpScreen(ModalScreen[None]):
     def on_key(self, event: Key) -> None:
         if event.key in ("escape", "enter", "q"):
             self.dismiss()
+
+# ─── Session Selector Screen ─────────────────────────────────────
+
+class SessionSelectorScreen(ModalScreen[str | None]):
+    """Modal screen for selecting a past session to resume."""
+
+    DEFAULT_CSS = """
+    SessionSelectorScreen {
+        background: $surface 80%;
+        align: center middle;
+    }
+    #session-selector {
+        width: 100;
+        height: 25;
+        background: $surface;
+        border: tall $primary;
+        padding: 1 2;
+    }
+    #session-title {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #session-list {
+        height: 1fr;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "Cancel", show=False),
+    ]
+
+    def __init__(self, sessions: list[dict], **kwargs):
+        super().__init__(**kwargs)
+        self._sessions = sessions
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="session-selector"):
+            yield Label("Resume Past Session", id="session-title")
+            yield DataTable(id="session-list")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#session-list", DataTable)
+        table.add_columns("Date", "ID", "Msgs", "Tokens")
+        table.cursor_type = "row"
+        
+        # Sort sessions by updated_at descending
+        sorted_sessions = sorted(self._sessions, key=lambda s: s["updated_at"], reverse=True)
+        
+        for s in sorted_sessions:
+            # Format date
+            try:
+                dt = s["updated_at"].split(".")[0].replace("T", " ")
+            except Exception:
+                dt = s["updated_at"]
+            
+            table.add_row(
+                dt,
+                s["session_id"][:12] + "...",
+                str(s["message_count"]),
+                f"{s['total_tokens']:,}",
+                key=s["session_id"]
+            )
+        table.focus()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(str(event.row_key.value))
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
