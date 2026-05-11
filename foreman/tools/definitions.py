@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import difflib
 import platform
+import re
 import shutil
 import subprocess
 import logging
@@ -10,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("foreman.tools")
+READ_FILE_DEFAULT_MAX_BYTES = 2000
+READ_FILE_MAX_OUTPUT_CHARS = 30_000
+WRITE_DIFF_MAX_CHARS = 8_000
 
 # Find bash executable for Windows (Git Bash)
 def _find_bash() -> str | None:
@@ -59,7 +64,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file. Returns text (truncated to 30KB). For files > 100 lines, you MUST use start_line and end_line. Reading entire large files is a waste of tokens and context space.",
+            "description": (
+                "Read file contents safely. ALWAYS prefer byte-bounded reads with max_bytes=2000. "
+                "Set max_bytes to 0 only when you explicitly need an unbounded/full read. "
+                "You may set functions_only=true to return only defined/called function names."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -75,8 +84,22 @@ TOOL_DEFINITIONS = [
                         "type": "integer",
                         "description": "Line number to end reading at (inclusive, default start_line + 500)",
                     },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum UTF-8 bytes to return from the selected range. "
+                            "Default is 2000. Set to 0 for no byte limit."
+                        ),
+                    },
+                    "functions_only": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, returns only defined and called function names "
+                            "detected in the selected content."
+                        ),
+                    },
                 },
-                "required": ["path"],
+                "required": ["path", "max_bytes"],
             },
 
         },
@@ -85,7 +108,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file. Creates the file and parent directories if they don't exist. Overwrites existing content.",
+            "description": "Write content to a file. Creates parent directories as needed and returns a unified diff snippet of the change.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,6 +200,81 @@ TOOL_DEFINITIONS = [
 ]
 
 
+_DEF_PATTERNS = [
+    re.compile(r"^\s*async\s+def\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+    re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+    re.compile(r"^\s*function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+    re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", re.MULTILINE),
+    re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*lambda\b", re.MULTILINE),
+]
+_CALL_PATTERN = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_NON_CALL_NAMES = {
+    "if",
+    "for",
+    "while",
+    "with",
+    "switch",
+    "catch",
+    "return",
+    "print",
+    "typeof",
+    "sizeof",
+    "new",
+    "super",
+}
+
+
+def _ordered_unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def _function_names_view(text: str, path: str) -> str:
+    defined: list[str] = []
+    for pattern in _DEF_PATTERNS:
+        defined.extend(pattern.findall(text))
+    defined = _ordered_unique(defined)
+
+    called = _ordered_unique(
+        [
+            name
+            for name in _CALL_PATTERN.findall(text)
+            if name not in _NON_CALL_NAMES and not name.startswith("__")
+        ]
+    )
+
+    lines = [f"Function summary for {path}", "Defined:"]
+    lines.extend(f"- {name}" for name in defined) if defined else lines.append("- (none found)")
+    lines.append("Called:")
+    lines.extend(f"- {name}" for name in called) if called else lines.append("- (none found)")
+    return "\n".join(lines)
+
+
+def _render_write_diff(path: str, old_content: str, new_content: str, existed: bool) -> str:
+    from_file = f"a/{path}" if existed else "/dev/null"
+    to_file = f"b/{path}"
+    diff = "".join(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=from_file,
+            tofile=to_file,
+            n=3,
+        )
+    )
+    if not diff:
+        return f"No textual diff for {path} (file content unchanged)."
+
+    if len(diff) > WRITE_DIFF_MAX_CHARS:
+        diff = diff[:WRITE_DIFF_MAX_CHARS] + "\n... (diff truncated)"
+    return f"Updated {path}\n{diff}"
+
+
 
 
 def execute_tool(
@@ -249,8 +347,18 @@ def execute_tool(
         
         limit = arguments.get("limit", 1000)
         end_line = arguments.get("end_line", start_line + limit - 1)
+        raw_max_bytes = arguments.get("max_bytes", READ_FILE_DEFAULT_MAX_BYTES)
+        max_bytes = READ_FILE_DEFAULT_MAX_BYTES if raw_max_bytes is None else int(raw_max_bytes)
+        functions_only = bool(arguments.get("functions_only", False))
         
-        logger.info("Tool read_file: %s (lines %d-%d)", path, start_line, end_line)
+        logger.info(
+            "Tool read_file: %s (lines %d-%d, max_bytes=%d, functions_only=%s)",
+            path,
+            start_line,
+            end_line,
+            max_bytes,
+            functions_only,
+        )
 
         # Resolve relative paths against cwd
         file_path = Path(path)
@@ -276,14 +384,24 @@ def execute_tool(
             end_idx = min(len(lines), end_line)
             
             selected = lines[start_idx:end_idx]
-            result = "\n".join(selected)
-
-            # Truncate if too large (reduced limit to 30KB)
-            if len(result) > 30_000:
-                result = result[:30_000] + "\n... (truncated)"
-
             if not selected:
                 return f"(empty or beyond file end, file has {len(lines)} lines)"
+
+            selected_text = "\n".join(selected)
+            truncated_by_bytes = False
+            if max_bytes > 0:
+                selected_raw = selected_text.encode("utf-8")
+                if len(selected_raw) > max_bytes:
+                    selected_text = selected_raw[:max_bytes].decode("utf-8", errors="ignore")
+                    truncated_by_bytes = True
+
+            result = _function_names_view(selected_text, path) if functions_only else selected_text
+            if truncated_by_bytes and not functions_only:
+                result += f"\n... (byte-truncated to {max_bytes} bytes)"
+
+            # Final output cap
+            if len(result) > READ_FILE_MAX_OUTPUT_CHARS:
+                result = result[:READ_FILE_MAX_OUTPUT_CHARS] + "\n... (truncated)"
             return result
         except Exception as e:
             return f"Error reading file: {e}"
@@ -347,9 +465,19 @@ def execute_tool(
             file_path = cwd / file_path
 
         try:
+            existed = file_path.exists()
+            old_content = ""
+            if existed:
+                if not file_path.is_file():
+                    return f"Error: Not a file: {path}"
+                try:
+                    old_content = file_path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    old_content = ""
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return f"Wrote {len(content)} chars to {path}"
+            return _render_write_diff(path, old_content, content, existed)
         except Exception as e:
             return f"Error writing file: {e}"
 

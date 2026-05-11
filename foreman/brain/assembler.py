@@ -1,4 +1,4 @@
-"""Context assembler — concatenates system prompt, architecture, directory tree, and session history."""
+"""Context assembler — concatenates system prompt, JSON context, directory tree, and session history."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ SYSTEM_PROMPT = """You are Foreman, an expert agentic coding assistant. You help
 
 You have access to these tools:
 - bash: Execute a shell command in the project directory
-- read_file: Read a file's contents (use start_line/end_line for large files)
+- read_file: Read file content with line + byte limits (supports functions_only mode)
 - search_file: Search for a pattern in all project files (grep)
 - write_file: Write content to a file (creates parent dirs, overwrites existing)
 - summarize_last: Replace the last tool output in history with a concise summary
@@ -47,8 +47,17 @@ When implementing a multi-step plan, call `checkpoint_summary` after completing 
 
 - Use `search_file` to find where things live before reading them.
 - Use `start_line` and `end_line` in `read_file` to read only the relevant section.
+- **Always set `max_bytes` on `read_file` and default to `max_bytes=2000`.**
+- Use `functions_only=true` first when you only need a quick map of what a file does.
 - Don't read the same file twice if you can avoid it.
-- **CRITICAL: Reading the WHOLE file is only for very small files (< 100 lines).** Otherwise, ALWAYS use ranges or `search_file` (grep) to find relevant bits. If you read a whole large file, you are failing your token hygiene mandate.
+- **CRITICAL: Reading the WHOLE file is only for very small files (< 100 lines).** To do an unbounded read, explicitly set `max_bytes=0`. Otherwise, ALWAYS keep byte-bounded reads.
+
+## Project Context File (`.foreman/context.json`)
+
+- The canonical project metadata lives in `.foreman/context.json`.
+- Keep it dense and factual: summary, modules, entrypoints, flows, dependencies, commands, notes.
+- If implementation changes architecture/flow/dependencies/commands, update this file.
+- During exploration, if this file is stale or inconsistent with code, refresh it before continuing.
 
 ## Implementation Workflow
 
@@ -56,13 +65,17 @@ When asked to implement:
 1. Explore with `search_file` and targeted `read_file` calls. Summarize each with `summarize_last`.
 2. Form a plan and state it clearly.
 3. Execute step by step, writing files and running verification.
-4. After each step: call `checkpoint_summary` to record progress and what's next.
+4. Keep `.foreman/context.json` up to date when architecture/flows/dependencies change.
+5. After each step: call `checkpoint_summary` to record progress and what's next.
 
 ## General Guidelines
 - Be concise and direct. No preamble or filler.
 - Always read files before modifying them.
 - After making changes, run relevant tests or checks.
 - Preserve existing code style and patterns.
+- Treat `.foreman/context.json` as living project metadata; do not leave it outdated after meaningful codebase changes.
+
+At the end of this system prompt you may receive a dynamic runtime token/cost snapshot. Treat that trailing snapshot as authoritative current telemetry and use it to decide when to prioritize token-saving actions.
 """
 
 
@@ -76,7 +89,7 @@ async def assemble_context(
 ) -> tuple[str, int]:
     """Assemble the full context string for an LLM call.
 
-    Concatenation order: system prompt → Mermaid architecture → directory tree → session history.
+    Concatenation order: system prompt → dense JSON context → directory tree → session history.
     Returns (assembled_string, total_token_count).
     Truncates oldest messages if over budget.
     """
@@ -90,19 +103,19 @@ async def assemble_context(
     # 1. System prompt
     parts.append(SYSTEM_PROMPT)
 
-    # 2. Mermaid architecture files
+    # 2. Dense JSON project context
     if foreman_dir:
         fdir = Path(foreman_dir)
         structure = await load_structure(fdir)
         logic = await load_logic(fdir)
-        context_mmd = await load_context(fdir)
+        context_json = await load_context(fdir)
 
         if structure:
-            parts.append(f"\n## Project Structure\n```mermaid\n{structure}\n```")
+            parts.append(f"\n## Project Structure JSON\n```json\n{structure}\n```")
         if logic:
-            parts.append(f"\n## Logic Flow\n```mermaid\n{logic}\n```")
-        if context_mmd:
-            parts.append(f"\n## Dependencies\n```mermaid\n{context_mmd}\n```")
+            parts.append(f"\n## Logic Flow JSON\n```json\n{logic}\n```")
+        if context_json:
+            parts.append(f"\n## Dependencies/Commands JSON\n```json\n{context_json}\n```")
 
     # 3. Directory tree
     if directory_tree:

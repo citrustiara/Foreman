@@ -60,7 +60,7 @@ class TokenBudget:
 
     @property
     def system_reserve(self) -> int:
-        """Tokens reserved for system prompt + mermaid architecture."""
+        """Tokens reserved for system prompt + project context metadata."""
         return self.system_prompt_tokens + self.mermaid_tokens
 
     @property

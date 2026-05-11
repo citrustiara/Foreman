@@ -21,6 +21,13 @@ class ModelRouter:
         litellm.suppress_debug_info = True
         litellm.logging = False
 
+    @staticmethod
+    def _supports_reasoning_retry(exception: Exception, kwargs: dict[str, Any]) -> bool:
+        if "reasoning_effort" not in kwargs:
+            return False
+        message = str(exception).lower()
+        return "reason" in message or "effort" in message or "invalid parameter" in message
+
     async def generate(
         self,
         profile: ModelProfile,
@@ -43,6 +50,17 @@ class ModelRouter:
             logger.info("Generated %d chars from %s", len(content), profile.litellm_model)
             return content
         except Exception as e:
+            if self._supports_reasoning_retry(e, kwargs):
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("reasoning_effort", None)
+                response = await litellm.acompletion(
+                    model=profile.litellm_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **retry_kwargs,
+                )
+                return response.choices[0].message.content or ""
             logger.error("Generation failed with %s: %s", profile.litellm_model, e)
             raise
 
@@ -66,15 +84,32 @@ class ModelRouter:
         try:
             if delta_callback:
                 # Use streaming mode
-                response_stream = await litellm.acompletion(
-                    model=profile.litellm_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    stream=True,
-                    **kwargs,
-                )
+                try:
+                    response_stream = await litellm.acompletion(
+                        model=profile.litellm_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        **kwargs,
+                    )
+                except Exception as e:
+                    if not self._supports_reasoning_retry(e, kwargs):
+                        raise
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs.pop("reasoning_effort", None)
+                    response_stream = await litellm.acompletion(
+                        model=profile.litellm_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        **retry_kwargs,
+                    )
                 
                 chunks = []
                 async for chunk in response_stream:
@@ -87,14 +122,28 @@ class ModelRouter:
                 return litellm.stream_chunk_builder(chunks)
             else:
                 # Normal non-streaming mode
-                response = await litellm.acompletion(
-                    model=profile.litellm_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    **kwargs,
-                )
+                try:
+                    response = await litellm.acompletion(
+                        model=profile.litellm_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        **kwargs,
+                    )
+                except Exception as e:
+                    if not self._supports_reasoning_retry(e, kwargs):
+                        raise
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs.pop("reasoning_effort", None)
+                    response = await litellm.acompletion(
+                        model=profile.litellm_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        **retry_kwargs,
+                    )
                 return response
         except Exception as e:
             logger.error("Generation with tools failed for %s: %s", profile.litellm_model, e)

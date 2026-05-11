@@ -47,7 +47,7 @@ Output your plan as a structured JSON matching the ImplementationPlan schema."""
 PLANNER_USER_TEMPLATE = """## Feature Request
 {feature_description}
 
-## Project Architecture
+## Project Context
 {architecture}
 
 ## Directory Structure
@@ -68,12 +68,13 @@ class Planner:
         architecture: str = "",
         directory_tree: str = "",
         primary_model: ModelProfile | None = None,
+        reasoning_effort: str | None = None,
     ) -> ImplementationPlan:
         """Generate a structured implementation plan.
 
         Args:
             feature_description: What to implement.
-            architecture: Mermaid architecture diagrams.
+            architecture: Dense project context JSON / metadata.
             directory_tree: Project directory structure.
             primary_model: Model to use. Defaults to gemini/gemini-2.5-pro.
 
@@ -97,10 +98,12 @@ class Planner:
         ]
 
         # Request JSON output
+        generation_kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
         response = await self.router.generate(
             profile=primary_model,
             messages=messages,
             temperature=0.3,
+            **generation_kwargs,
         )
 
         # Parse the response into an ImplementationPlan

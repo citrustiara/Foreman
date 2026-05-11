@@ -6,23 +6,10 @@ import json
 from pathlib import Path
 
 from foreman.config import ForemanConfig
+from foreman.brain.architecture import EMPTY_CONTEXT
 
 
 FOREMAN_DIR = ".foreman"
-
-TEMPLATE_STRUCTURE = """graph TD
-    A[Your Module] --> B[Submodule]
-    A --> C[Utilities]
-    B --> D[Helpers]
-"""
-
-TEMPLATE_LOGIC = """sequenceDiagram
-    participant User
-    participant System
-    User->>System: Request
-    System->>System: Process
-    System->>User: Response
-"""
 
 
 def init_project(repo_root: Path, config: ForemanConfig | None = None) -> Path:
@@ -46,14 +33,10 @@ def init_project(repo_root: Path, config: ForemanConfig | None = None) -> Path:
         config = ForemanConfig()
     config.save(repo_root)
 
-    # Create template Mermaid files
-    structure_path = foreman_dir / "structure.mmd"
-    if not structure_path.exists():
-        structure_path.write_text(TEMPLATE_STRUCTURE.strip(), encoding="utf-8")
-
-    logic_path = foreman_dir / "logic.mmd"
-    if not logic_path.exists():
-        logic_path.write_text(TEMPLATE_LOGIC.strip(), encoding="utf-8")
+    # Create dense JSON context file
+    context_path = foreman_dir / "context.json"
+    if not context_path.exists():
+        context_path.write_text(json.dumps(EMPTY_CONTEXT, indent=2), encoding="utf-8")
 
     # Create .gitkeep files in empty dirs
     for subdir in ("sessions", "compactions"):

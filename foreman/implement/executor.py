@@ -1,4 +1,4 @@
-"""Clean sub-session execution for the /implement pipeline."""
+"""Clean sub-session execution for the plan/approve pipeline."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ logger = logging.getLogger("foreman.implement.executor")
 EXECUTOR_SYSTEM_PROMPT = """You are an expert code implementation agent. You will be given:
 1. An approved implementation plan
 2. The relevant source files
-3. The project's architecture diagrams
+3. The project's dense context metadata
 
 Your task is to implement the plan by producing code changes.
 
@@ -46,13 +46,14 @@ class Executor:
         relevant_files: dict[str, str],
         architecture: str = "",
         primary_model: ModelProfile | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Execute an implementation plan in a clean sub-session.
 
         Args:
             plan_markdown: The approved plan in Markdown format.
             relevant_files: Dict mapping file paths to their current contents.
-            architecture: Mermaid architecture diagrams.
+            architecture: Dense project context JSON / metadata.
             primary_model: Model to use for generation.
 
         Returns:
@@ -73,7 +74,7 @@ class Executor:
         if architecture:
             messages.append({
                 "role": "user",
-                "content": f"## Project Architecture\n```mermaid\n{architecture}\n```",
+                "content": f"## Project Context\n{architecture}",
             })
 
         # Build the implementation request
@@ -98,10 +99,12 @@ Implement this plan. Output all changes as SEARCH/REPLACE blocks."""
             len(messages),
         )
 
+        generation_kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
         response = await self.router.generate(
             profile=primary_model,
             messages=messages,
             temperature=0.2,  # Low temperature for precise code generation
+            **generation_kwargs,
         )
 
         return response

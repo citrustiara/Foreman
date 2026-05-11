@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from foreman.brain.session import Session, Message, SessionStore
 from foreman.compact.injector import compact_session, compact_session_self
@@ -31,12 +31,88 @@ MAX_TOOL_ROUNDS = 25
 def _extract_usage(response) -> tuple[int, int]:
     """Extract input/output token counts from a litellm response object."""
     usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
     if usage:
+        if isinstance(usage, dict):
+            return (
+                int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0),
+                int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0),
+            )
         return (
-            getattr(usage, "prompt_tokens", 0) or 0,
-            getattr(usage, "completion_tokens", 0) or 0,
+            int(getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)) or 0),
+            int(getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)) or 0),
         )
     return 0, 0
+
+
+def _normalize_read_path(path: str) -> str:
+    return path.replace("\\", "/").strip().lower()
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_full_read(args: dict[str, Any]) -> bool:
+    start_line = _to_int(args.get("start_line", args.get("offset", 1)), 1)
+    max_bytes = _to_int(args.get("max_bytes", 2000), 2000)
+    has_end_line = "end_line" in args and args.get("end_line") is not None
+    has_legacy_limit = "limit" in args or "offset" in args
+    return start_line <= 1 and max_bytes <= 0 and not has_end_line and not has_legacy_limit
+
+
+def _resolve_tool_call_args(session: Session, tool_call_id: str) -> dict[str, Any] | None:
+    for msg in reversed(session.messages):
+        if msg.role != "assistant" or not msg.tool_calls:
+            continue
+        for tc in msg.tool_calls:
+            if tc.get("id") != tool_call_id:
+                continue
+            fn = tc.get("function", {})
+            if fn.get("name") != "read_file":
+                return None
+            try:
+                return json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+async def _replace_partial_read_with_note(
+    app: "ForemanApp",
+    session: Session,
+    messages: list[dict],
+    path: str,
+) -> bool:
+    path_key = _normalize_read_path(path)
+    for msg in reversed(session.messages):
+        if msg.role != "tool" or not msg.tool_call_id:
+            continue
+        args = _resolve_tool_call_args(session, msg.tool_call_id)
+        if not args:
+            continue
+        prior_path = _normalize_read_path(str(args.get("path", "")))
+        if prior_path != path_key:
+            continue
+        if _is_full_read(args):
+            return False
+        replacement = f"[Superseded partial read]\nA full read for {path} was fetched later."
+        msg.content = replacement
+        msg.token_count = app.token_counter.count_tokens(replacement, app.primary_profile.litellm_model)
+        for local in messages:
+            if local.get("role") == "tool" and local.get("tool_call_id") == msg.tool_call_id:
+                local["content"] = replacement
+                break
+        session.total_tokens = sum(m.token_count for m in session.messages)
+        await app.session_store.save(session)
+        return True
+    return False
 
 
 async def run_chat(app: "ForemanApp", user_message: str) -> None:
@@ -52,6 +128,7 @@ async def run_chat(app: "ForemanApp", user_message: str) -> None:
 
     app.chat_panel.add_user_message(user_message)
     app.update_status("\u25d0 Generating...")
+    app.set_input_enabled(False)
 
     # Track cumulative token usage across all rounds
     total_input_tokens = 0
@@ -86,22 +163,23 @@ async def run_chat(app: "ForemanApp", user_message: str) -> None:
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
                 delta_callback=on_delta,
+                **app.llm_reasoning_kwargs(),
             )
-
-            # Extract real token usage from the response
-            round_input, round_output = _extract_usage(response)
-            total_input_tokens += round_input
-            total_output_tokens += round_output
 
             choice = response.choices[0]
             assistant_msg = choice.message
+            tool_calls = getattr(assistant_msg, "tool_calls", None)
+
+            # Use provider-reported usage only to avoid inflated cost accounting.
+            round_input, round_output = _extract_usage(response)
+            if round_input > 0 or round_output > 0:
+                total_input_tokens += round_input
+                total_output_tokens += round_output
 
             # Convert the assistant message to dict for the message list
             assistant_dict: dict = {"role": "assistant", "content": assistant_msg.content or ""}
 
             # Check if the model wants to call tools
-            tool_calls = getattr(assistant_msg, "tool_calls", None)
-
             if not tool_calls:
                 # No tool calls — model is done.
                 text = assistant_msg.content or ""
@@ -161,15 +239,19 @@ async def run_chat(app: "ForemanApp", user_message: str) -> None:
                     tool_args = {}
 
                 # Display the tool call
-                if tool_name == "bash":
+                if app.expand_tool_output:
+                    app.chat_panel.add_tool_call(f"⚙ {tool_name} {tc.function.arguments}")
+                elif tool_name == "bash":
                     app.chat_panel.add_tool_call(f"$ {tool_args.get('command', '')}")
                 elif tool_name == "read_file":
                     lines_hint = ""
                     sl = tool_args.get('start_line', 1)
                     el = tool_args.get('end_line')
+                    mb = tool_args.get("max_bytes")
                     if el:
                         lines_hint = f" (L{sl}-{el})"
-                    app.chat_panel.add_tool_call(f"\u270e {tool_args.get('path', '')}{lines_hint}")
+                    bytes_hint = f" [{mb}B]" if mb is not None else ""
+                    app.chat_panel.add_tool_call(f"\u270e {tool_args.get('path', '')}{lines_hint}{bytes_hint}")
                 elif tool_name == "write_file":
                     app.chat_panel.add_tool_call(f"\u270f {tool_args.get('path', '')}")
                 elif tool_name == "search_file":
@@ -201,13 +283,20 @@ async def run_chat(app: "ForemanApp", user_message: str) -> None:
                     await app.session_store.append_message(session, Message(role="tool", content=tr, tool_call_id=tc.id, token_count=tr_tokens))
                     continue
 
-                tool_result = execute_tool(tool_name, tool_args, cwd=app.repo_root)
+                if tool_name == "read_file" and _is_full_read(tool_args):
+                    await _replace_partial_read_with_note(
+                        app,
+                        session,
+                        messages,
+                        str(tool_args.get("path", "")),
+                    )
 
-                # Display truncated result
-                display_result = tool_result
-                if len(display_result) > 500:
-                    display_result = display_result[:500] + "\n... (truncated in display)"
-                app.chat_panel.add_tool_result(display_result)
+                tool_result = execute_tool(tool_name, tool_args, cwd=app.repo_root)
+                if tool_name == "write_file":
+                    app.register_file_modification(str(tool_args.get("path", "")), tool_result)
+
+                # Display tool result with current expansion mode
+                app.chat_panel.add_tool_result(app.format_tool_display(tool_result))
 
                 # Add tool result to messages
                 messages.append({
@@ -270,6 +359,7 @@ async def run_chat(app: "ForemanApp", user_message: str) -> None:
         app.chat_panel.add_error(str(e))
         app.update_status("\u2717 Error")
     finally:
+        app.set_input_enabled(True)
         app._current_task = None
 
 
@@ -342,8 +432,8 @@ async def run_compact_self(app: "ForemanApp") -> None:
         app.chat_panel.add_error(f"Self-compact failed: {e}")
 
 
-async def run_implement(app: "ForemanApp", feature_description: str) -> None:
-    """Run the implement pipeline: plan → execute → patch."""
+async def run_plan(app: "ForemanApp", feature_description: str) -> None:
+    """Generate a plan and stage it for /approve."""
     session = app.current_session
     if session is None:
         return
@@ -352,14 +442,13 @@ async def run_implement(app: "ForemanApp", feature_description: str) -> None:
     app.update_status("⟐ Planning...")
 
     try:
-        # 1. Load architecture
+        # 1. Load dense project context
         architecture = ""
-        for mmd_file in ("structure.mmd", "logic.mmd", "context.mmd"):
-            path = app.foreman_dir / mmd_file
-            if path.exists():
-                text = path.read_text(encoding="utf-8")
-                if text.strip():
-                    architecture += f"\n### {mmd_file}\n```mermaid\n{text}\n```\n"
+        context_path = app.foreman_dir / "context.json"
+        if context_path.exists():
+            text = context_path.read_text(encoding="utf-8")
+            if text.strip():
+                architecture = f"### context.json\n```json\n{text}\n```\n"
 
         # 2. Generate directory tree (Windows-friendly version)
         try:
@@ -383,6 +472,7 @@ async def run_implement(app: "ForemanApp", feature_description: str) -> None:
             architecture=architecture,
             directory_tree=directory_tree,
             primary_model=app.primary_profile,
+            reasoning_effort=app.reasoning_effort_api(),
         )
 
         # 4. Display plan
@@ -399,9 +489,14 @@ async def run_implement(app: "ForemanApp", feature_description: str) -> None:
         app.update_status("⟐ Awaiting approval...")
 
     except Exception as e:
-        logger.error("Implement failed: %s", e)
-        app.chat_panel.add_error(f"Implement failed: {e}")
+        logger.error("Plan generation failed: %s", e)
+        app.chat_panel.add_error(f"Plan generation failed: {e}")
         app.update_status("✗ Error")
+
+
+async def run_implement(app: "ForemanApp", feature_description: str) -> None:
+    """Backward-compatible alias for older callers."""
+    await run_plan(app, feature_description)
 
 async def run_handoff(app: "ForemanApp") -> None:
     """Summarize session and start a new one."""

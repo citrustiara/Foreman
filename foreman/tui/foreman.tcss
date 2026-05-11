@@ -18,14 +18,50 @@ Header {
 }
 
 .sidebar-right {
-    width: 1fr;
-    min-width: 25;
-    max-width: 35;
+    width: 24;
+    min-width: 18;
+    max-width: 26;
     border-left: solid $primary;
 }
 
+#right-sidebar.minimized {
+    width: 5;
+    min-width: 5;
+    max-width: 5;
+}
+
+#right-sidebar.minimized #context-stats {
+    display: none;
+}
+
+#toggle-context-btn {
+    width: 100%;
+    min-height: 3;
+    margin: 0 0 1 0;
+}
+
 .main {
+    width: 4fr;
+}
+
+#work-area {
+    height: 1fr;
+}
+
+#chat-panel {
+    width: 1fr;
+}
+
+#file-preview {
+    width: 1fr;
+}
+
+#work-area.code-focused #file-preview {
     width: 3fr;
+}
+
+#work-area.code-focused #chat-panel {
+    width: 1fr;
 }
 
 /* Directory tree */
@@ -75,7 +111,7 @@ Header {
     padding: 0 1;
     border-left: solid $accent 20%;
     height: auto;
-    max-height: 10;
+    overflow: auto;
 }
 
 /* Input */
@@ -156,6 +192,45 @@ HelpScreen {
 }
 
 /* Footer */
+#stats-footer {
+    background: $primary-darken-2;
+    color: $text;
+    padding: 0 1;
+    height: 1;
+}
+
 Footer {
     background: $primary;
+}
+
+#file-preview-toolbar {
+    height: 3;
+    margin: 0 0 1 0;
+}
+
+#file-preview-title {
+    width: 1fr;
+}
+
+#save-file-btn,
+#toggle-code-focus-btn {
+    width: 8;
+    min-width: 8;
+}
+
+#file-editor {
+    width: 1fr;
+    height: 1fr;
+    overflow-x: auto;
+    overflow-y: auto;
+}
+
+#file-diff-view {
+    width: 1fr;
+    height: 1fr;
+    overflow: auto;
+}
+
+.hidden {
+    display: none;
 }

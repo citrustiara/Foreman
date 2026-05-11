@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import unified_diff
+from pathlib import Path
+import subprocess
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual.events import Key
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Label, ListItem, ListView, Static, TextArea
-from textual.containers import Horizontal
+from textual.widgets import Button, DataTable, Input, Label, ListItem, ListView, Static, TextArea
 from rich.markdown import Markdown
 
 if TYPE_CHECKING:
@@ -28,12 +31,13 @@ COMMANDS = {
     "model list": "Show available model presets",
     "compact": "Force context compaction (summary model)",
     "compact-self": "Force self-compaction (primary model)",
-    "implement": "Start implement pipeline",
+    "plan": "Generate and stage an implementation plan",
     "status": "Show session and token stats",
     "cost": "Show cost breakdown",
     "keys": "Show API key status",
     "config": "View or set configuration",
     "fetch": "Fetch latest OpenRouter models",
+    "context": "Refresh dense .foreman/context.json",
     "handoff": "Summarize and start a new session (resets tokens)",
     "clear": "Clear chat display",
     "new": "Start a new session",
@@ -55,8 +59,73 @@ class SubmitTextArea(TextArea):
         """Fired when Enter is pressed."""
         text: str
 
+    @staticmethod
+    def _read_clipboard_text() -> str | None:
+        try:
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.withdraw()
+            text = root.clipboard_get()
+            root.destroy()
+            return text
+        except Exception:
+            pass
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except Exception:
+            pass
+        return None
+
     async def _on_key(self, event: Key) -> None:
         """Override to intercept Enter before TextArea processes it."""
+        if event.key == "shift+tab":
+            event.prevent_default()
+            event.stop()
+            self.app.action_cycle_thinking_effort()
+            return
+        if event.key == "ctrl+o":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_tool_output()
+            return
+        if event.key == "ctrl+d":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_file_diff()
+            return
+        if event.key == "ctrl+b":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_context_panel()
+            return
+        if event.key == "ctrl+e":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_code_focus()
+            return
+        if event.key == "ctrl+s":
+            event.prevent_default()
+            event.stop()
+            self.app.action_save_open_file()
+            return
+        if event.key == "ctrl+v":
+            event.prevent_default()
+            event.stop()
+            pasted = self._read_clipboard_text()
+            if pasted:
+                try:
+                    self.insert(pasted)
+                except Exception:
+                    self.text += pasted
+            return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -66,6 +135,56 @@ class SubmitTextArea(TextArea):
                 self.text = ""
             return
         # Let TextArea handle everything else
+        await super()._on_key(event)
+
+
+class PreviewTextArea(TextArea):
+    """Editor textarea used in the file preview panel."""
+
+    async def _on_key(self, event: Key) -> None:
+        if event.key == "ctrl+b":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_context_panel()
+            return
+        if event.key == "ctrl+e":
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_code_focus()
+            return
+        if event.key == "ctrl+s":
+            event.prevent_default()
+            event.stop()
+            self.app.action_save_open_file()
+            return
+        if event.key == "ctrl+z":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_undo"):
+                self.action_undo()
+            return
+        if event.key == "ctrl+y":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_redo"):
+                self.action_redo()
+            return
+        if event.key == "ctrl+a":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_select_all"):
+                self.action_select_all()
+            return
+        if event.key == "ctrl+v":
+            event.prevent_default()
+            event.stop()
+            pasted = SubmitTextArea._read_clipboard_text()
+            if pasted:
+                try:
+                    self.insert(pasted)
+                except Exception:
+                    self.text += pasted
+            return
         await super()._on_key(event)
 
 
@@ -188,7 +307,10 @@ class InputBar(Vertical):
         yield SubmitTextArea("", id="input-area")
 
     def on_mount(self) -> None:
-        self.query_one("#input-area", SubmitTextArea).focus()
+        ta = self.query_one("#input-area", SubmitTextArea)
+        ta.soft_wrap = True
+        ta.focus()
+        self._autosize_input()
 
     def on_submit_text_area_submitted(self, event: SubmitTextArea.Submitted) -> None:
         """Handle submit from the text area."""
@@ -211,10 +333,12 @@ class InputBar(Vertical):
         else:
             palette.hide()
             self.post_message(self.UserMessage(content=text))
+        self._autosize_input()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Update palette whenever text changes."""
         self._update_palette()
+        self._autosize_input()
 
 
     def on_key(self, event: Key) -> None:
@@ -252,6 +376,14 @@ class InputBar(Vertical):
             ta = self.query_one("#input-area", SubmitTextArea)
             palette = self.query_one("#cmd-palette", CommandPalette)
             palette.filter_commands(ta.text)
+        except Exception:
+            pass
+
+    def _autosize_input(self) -> None:
+        try:
+            ta = self.query_one("#input-area", SubmitTextArea)
+            lines = max(1, ta.text.count("\n") + 1)
+            ta.styles.height = min(5, max(3, lines + 1))
         except Exception:
             pass
 
@@ -307,11 +439,29 @@ class ChatPanel(VerticalScroll):
         self.scroll_end()
 
     def add_tool_result(self, content: str) -> None:
-        self.mount(Static(content, classes="msg-tool-result"))
+        self.mount(Static(self._colorize_diff(content), classes="msg-tool-result"))
         self.scroll_end()
 
     def clear_chat(self) -> None:
         self.remove_children()
+
+    @staticmethod
+    def _colorize_diff(content: str) -> str:
+        lines = content.splitlines()
+        if not any(line.startswith(("--- ", "+++ ", "@@", "+", "-")) for line in lines):
+            return content
+        colored: list[str] = []
+        for line in lines:
+            safe = escape(line)
+            if line.startswith("+") and not line.startswith("+++"):
+                colored.append(f"[green]{safe}[/]")
+            elif line.startswith("-") and not line.startswith("---"):
+                colored.append(f"[red]{safe}[/]")
+            elif line.startswith(("@@", "---", "+++")):
+                colored.append(f"[cyan]{safe}[/]")
+            else:
+                colored.append(safe)
+        return "\n".join(colored)
 
 
 # ─── Context Stats Panel ─────────────────────────────────────────
@@ -328,11 +478,21 @@ class ContextStatsPanel(Static):
     }
     """
 
-    def update_stats(self, budget: "TokenBudget", cost: "SessionCost | None" = None) -> None:
+    def update_stats(
+        self,
+        budget: "TokenBudget",
+        cost: "SessionCost | None" = None,
+        thinking_level: str = "low",
+        expanded_tools: bool = False,
+        modified_files: list[str] | None = None,
+        open_file: str | None = None,
+    ) -> None:
         bar = budget.format_bar(width=20)
         total_used = budget.used  # system_reserve + session_tokens
         lines = [
             f"[bold]Token Budget[/]",
+            f"  Thinking: {thinking_level}",
+            f"  Tool view: {'expanded' if expanded_tools else 'collapsed'}",
             f"  {bar}",
             f"  Context: {budget.context_window:,}",
             f"  System: {budget.system_prompt_tokens:,}",
@@ -348,7 +508,158 @@ class ContextStatsPanel(Static):
             lines.append(f"  Input: {cost.total_input_tokens:,} tokens")
             lines.append(f"  Output: {cost.total_output_tokens:,} tokens")
             lines.append(f"  Calls: {len(cost.entries)}")
+        if modified_files:
+            lines.append("")
+            lines.append("[bold]Modified (session)[/]")
+            for path in modified_files[:12]:
+                is_open = open_file is not None and path == open_file
+                lines.append(f"  {'[bold green]●[/] ' if is_open else '[green]•[/] '}{path}")
+            if len(modified_files) > 12:
+                lines.append(f"  [dim]+{len(modified_files) - 12} more[/]")
         self.update("\n".join(lines))
+
+
+class FilePreviewPanel(VerticalScroll):
+    """Editable source preview panel with optional diff view."""
+
+    DEFAULT_CSS = """
+    FilePreviewPanel {
+        display: none;
+        width: 1fr;
+        border-right: solid $primary;
+        padding: 0 1;
+    }
+    FilePreviewPanel.visible {
+        display: block;
+    }
+    """
+
+    @dataclass
+    class FileSaved(Message):
+        path: str
+        diff_text: str
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._current_path: str | None = None
+        self._original_text: str = ""
+        self._showing_diff: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="file-preview-toolbar"):
+            yield Static("[dim]No file open[/]", id="file-preview-title")
+            yield Button("💾", id="save-file-btn")
+            yield Button("⤢", id="toggle-code-focus-btn")
+        yield PreviewTextArea("", id="file-editor")
+        yield Static("", id="file-diff-view")
+
+    def on_mount(self) -> None:
+        editor = self.query_one("#file-editor", PreviewTextArea)
+        editor.soft_wrap = False
+        try:
+            editor.show_line_numbers = True
+        except Exception:
+            pass
+        self.query_one("#file-diff-view", Static).add_class("hidden")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save-file-btn":
+            self.action_save_file()
+        elif event.button.id == "toggle-code-focus-btn":
+            self.app.action_toggle_code_focus()
+
+    def show_file(self, path: str) -> None:
+        self.add_class("visible")
+        editor = self.query_one("#file-editor", PreviewTextArea)
+        diff_view = self.query_one("#file-diff-view", Static)
+        title = self.query_one("#file-preview-title", Static)
+        self._showing_diff = False
+        self._current_path = path
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            self._original_text = text
+            editor.text = text
+            editor.remove_class("hidden")
+            diff_view.add_class("hidden")
+            title.update(f"[bold]{Path(path).name}[/] [dim]{path}[/]")
+            editor.focus()
+        except Exception as e:
+            editor.add_class("hidden")
+            diff_view.remove_class("hidden")
+            diff_view.update(f"[bold red]Failed to open {path}:[/] {e}")
+            title.update(f"[bold red]Open failed[/] [dim]{path}[/]")
+
+    def hide_file(self) -> None:
+        self.remove_class("visible")
+        self._current_path = None
+        self._original_text = ""
+        self._showing_diff = False
+        editor = self.query_one("#file-editor", PreviewTextArea)
+        diff_view = self.query_one("#file-diff-view", Static)
+        title = self.query_one("#file-preview-title", Static)
+        editor.text = ""
+        editor.remove_class("hidden")
+        diff_view.update("")
+        diff_view.add_class("hidden")
+        title.update("[dim]No file open[/]")
+
+    def show_diff(self, path: str, diff_text: str) -> None:
+        self.add_class("visible")
+        editor = self.query_one("#file-editor", PreviewTextArea)
+        diff_view = self.query_one("#file-diff-view", Static)
+        title = self.query_one("#file-preview-title", Static)
+        self._showing_diff = True
+        self._current_path = path
+        editor.add_class("hidden")
+        diff_view.remove_class("hidden")
+        diff_view.update(ChatPanel._colorize_diff(diff_text or "(no diff available for this file in this session)"))
+        title.update(f"[bold]Diff[/] [dim]{path}[/]")
+
+    def action_save_file(self) -> None:
+        if not self._current_path or self._showing_diff:
+            return
+        editor = self.query_one("#file-editor", PreviewTextArea)
+        updated_text = editor.text
+        if updated_text == self._original_text:
+            return
+        path_obj = Path(self._current_path)
+        path_obj.write_text(updated_text, encoding="utf-8")
+        diff_text = "\n".join(
+            unified_diff(
+                self._original_text.splitlines(),
+                updated_text.splitlines(),
+                fromfile=f"a/{path_obj.as_posix()}",
+                tofile=f"b/{path_obj.as_posix()}",
+                lineterm="",
+            )
+        )
+        self._original_text = updated_text
+        self.post_message(self.FileSaved(path=self._current_path, diff_text=diff_text))
+        self.query_one("#file-preview-title", Static).update(
+            f"[bold]{path_obj.name}[/] [green](saved)[/] [dim]{self._current_path}[/]"
+        )
+
+
+class StatusFooter(Static):
+    """Compact always-visible session stats at the bottom."""
+
+    def update_stats(
+        self,
+        *,
+        context_used: int,
+        context_window: int,
+        available: int,
+        total_cost: float,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        pct = (context_used / context_window * 100.0) if context_window else 0.0
+        self.update(
+            f"[bold]Ctx[/] {context_used:,}/{context_window:,} ({pct:.0f}%) • "
+            f"[bold]Avail[/] {available:,} • "
+            f"[bold]Cost[/] ${total_cost:.4f} • "
+            f"[bold]I/O[/] {input_tokens:,}/{output_tokens:,}"
+        )
 
 
 # ─── Model Selector Screen ───────────────────────────────────────
@@ -500,7 +811,7 @@ class HelpScreen(ModalScreen[None]):
                 "[cyan]/model summary <id>[/]  Switch summary model",
                 "[cyan]/compact[/]     Force compaction (summary model)",
                 "[cyan]/compact-self[/] Force self-compaction (primary model)",
-                "[cyan]/implement[/]   Start implement pipeline",
+                "[cyan]/plan[/]        Generate and stage implementation plan",
                 "[cyan]/approve[/]     Approve pending plan",
                 "[cyan]/reject[/]      Reject pending plan",
                 "[cyan]/status[/]      Session and token stats",
@@ -508,6 +819,7 @@ class HelpScreen(ModalScreen[None]):
                 "[cyan]/keys[/]        API key status",
                 "[cyan]/config[/]      View/set configuration",
                 "[cyan]/fetch[/]       Fetch latest OpenRouter models",
+                "[cyan]/context[/]     Refresh .foreman/context.json",
                 "[cyan]/clear[/]       Clear chat",
                 "[cyan]/new[/]         New session",
                 "[cyan]/resume[/]      Resume a past session",
@@ -515,6 +827,12 @@ class HelpScreen(ModalScreen[None]):
                 "",
                 "[bold]Keybindings[/]",
                 "[cyan]Ctrl+L[/]       Model selector",
+                "[cyan]Shift+Tab[/]    Cycle thinking effort",
+                "[cyan]Ctrl+O[/]       Toggle full tool output",
+                "[cyan]Ctrl+D[/]       Toggle diff/source in file preview",
+                "[cyan]Ctrl+B[/]       Minimize/expand token-cost panel",
+                "[cyan]Ctrl+E[/]       Toggle code focus size",
+                "[cyan]Ctrl+S[/]       Save open code file",
                 "[cyan]Ctrl+N[/]       New session",
                 "[cyan]Ctrl+Q[/]       Quit",
                 "[cyan]Escape[/]       Cancel running task",

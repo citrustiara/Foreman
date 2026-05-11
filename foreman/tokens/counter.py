@@ -19,8 +19,12 @@ class TokenCounter:
 
     def _get_encoding(self, model: str) -> tiktoken.Encoding:
         if model not in self._encodings:
-            enc_name = self._resolve_encoding(model)
-            self._encodings[model] = tiktoken.get_encoding(enc_name)
+            normalized = model.split("/", 1)[-1]
+            try:
+                self._encodings[model] = tiktoken.encoding_for_model(normalized)
+            except KeyError:
+                enc_name = self._resolve_encoding(model)
+                self._encodings[model] = tiktoken.get_encoding(enc_name)
         return self._encodings[model]
 
     @staticmethod
@@ -28,11 +32,25 @@ class TokenCounter:
         """Map model name to tiktoken encoding name."""
         model_lower = model.lower()
         # Newer models often use o200k
-        if any(x in model_lower for x in ["o200k", "o1-", "o3-"]):
+        if any(x in model_lower for x in ["o200k", "o1-", "o3-", "gpt-4o", "gpt-5", "claude-4"]):
             return "o200k_base"
         
         # Default to cl100k_base
         return "cl100k_base"
+
+    @staticmethod
+    def _iter_strings(value: Any):
+        """Yield all nested string values in dict/list payloads."""
+        if isinstance(value, str):
+            yield value
+            return
+        if isinstance(value, list):
+            for item in value:
+                yield from TokenCounter._iter_strings(item)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from TokenCounter._iter_strings(item)
 
     def count_tokens(self, text: str, model: str) -> int:
         """Count tokens in a string for a given model."""
@@ -45,15 +63,10 @@ class TokenCounter:
         total = 0
         for msg in messages:
             total += MESSAGE_OVERHEAD
-            for value in msg.values():
-                if isinstance(value, str):
-                    total += len(enc.encode(value))
-                elif isinstance(value, list):  # tool_calls
-                    for item in value:
-                        if isinstance(item, dict):
-                            for v in item.values():
-                                if isinstance(v, str):
-                                    total += len(enc.encode(v))
+            for field in ("role", "content", "name", "tool_call_id", "function_call", "tool_calls"):
+                if field in msg:
+                    for text in self._iter_strings(msg[field]):
+                        total += len(enc.encode(text))
         total += PRIMING_TOKENS
         return total
 
