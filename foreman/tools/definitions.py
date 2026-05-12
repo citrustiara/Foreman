@@ -17,21 +17,51 @@ READ_FILE_MAX_OUTPUT_CHARS = 30_000
 WRITE_DIFF_MAX_CHARS = 8_000
 
 # Find bash executable for Windows (Git Bash)
+# IMPORTANT: On Windows, `shutil.which("bash")` often returns
+# C:\Windows\System32\bash.exe — the WSL launcher, NOT Git Bash.
+# We must check real Git Bash paths FIRST and skip the WSL shim.
+
+def _is_wsl_shim(path: str) -> bool:
+    """Return True if the path is the Windows WSL bash launcher."""
+    normalized = path.replace("/", "\\").lower()
+    return "\\system32\\bash.exe" in normalized or "\\sysnative\\bash.exe" in normalized
+
+
 def _find_bash() -> str | None:
-    """Find a bash executable, preferring Git Bash on Windows."""
+    """Find a real bash executable on Windows, skipping the WSL shim."""
     if platform.system() != "Windows":
         return None  # Let subprocess use default shell
-    bash = shutil.which("bash")
-    if bash:
-        return bash
-    # Check common Git Bash locations
-    for candidate in [
+
+    # 1. Check well-known Git Bash install locations FIRST
+    git_bash_candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
         r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+        r"C:\Git\bin\bash.exe",
         r"C:\Git\usr\bin\bash.exe",
-    ]:
+    ]
+    # Also check scoop installs: ~/scoop/apps/git/current/usr/bin/bash.exe
+    import os
+    scoop_base = Path(os.environ.get("USERPROFILE", "")) / "scoop" / "apps"
+    if scoop_base.exists():
+        for git_dir in (scoop_base / "git").glob("*/usr/bin/bash.exe"):
+            git_bash_candidates.append(str(git_dir))
+        # Scoop 'current' symlink
+        git_bash_candidates.append(str(scoop_base / "git" / "current" / "usr" / "bin" / "bash.exe"))
+
+    for candidate in git_bash_candidates:
         if Path(candidate).exists():
+            logger.info("Found Git Bash at: %s", candidate)
             return candidate
+
+    # 2. Fall back to shutil.which, but SKIP the WSL shim
+    bash = shutil.which("bash")
+    if bash and not _is_wsl_shim(bash):
+        logger.info("Found bash via PATH: %s", bash)
+        return bash
+
+    logger.warning("No Git Bash found. Install Git for Windows to use the bash tool.")
     return None
 
 _BASH_PATH = _find_bash()

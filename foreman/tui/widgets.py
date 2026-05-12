@@ -18,6 +18,136 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, ListItem, ListView, Static, TextArea
 from rich.markdown import Markdown
 
+# File extension → Pygments/Textual language mapping for syntax highlighting
+_EXT_LANG: dict[str, str] = {
+    ".py": "python",
+    ".pyi": "python",
+    ".pyw": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".jsx": "jsx",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".json": "json",
+    ".jsonc": "json",
+    ".json5": "json5",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".sass": "sass",
+    ".less": "less",
+    ".xml": "xml",
+    ".svg": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".conf": "ini",
+    ".md": "markdown",
+    ".mdx": "markdown",
+    ".rst": "rst",
+    ".sql": "sql",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".fish": "fish",
+    ".bat": "batch",
+    ".cmd": "batch",
+    ".ps1": "powershell",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".swift": "swift",
+    ".scala": "scala",
+    ".lua": "lua",
+    ".r": "r",
+    ".R": "r",
+    ".dart": "dart",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".erl": "erlang",
+    ".hs": "haskell",
+    ".ml": "ocaml",
+    ".mli": "ocaml",
+    ".clj": "clojure",
+    ".groovy": "groovy",
+    ".dockerfile": "docker",
+    ".makefile": "make",
+    ".cmake": "cmake",
+    ".tf": "terraform",
+    ".hcl": "hcl",
+    ".proto": "protobuf",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".vue": "vue",
+    ".svelte": "svelte",
+    ".tcl": "tcl",
+    ".v": "verilog",
+    ".vhd": "vhdl",
+    ".vhdl": "vhdl",
+    ".zig": "zig",
+    ".nim": "nim",
+    ".v": "v",
+}
+
+# Filenames (no extension) that map to a language
+_FILENAME_LANG: dict[str, str] = {
+    "Dockerfile": "docker",
+    "Makefile": "make",
+    "makefile": "make",
+    "CMakeLists.txt": "cmake",
+    "Vagrantfile": "ruby",
+    "Gemfile": "ruby",
+    "Rakefile": "ruby",
+    "Justfile": "just",
+    "justfile": "just",
+    "Tiltfile": "starlark",
+    "PKGBUILD": "bash",
+    ".env": "ini",
+    ".gitignore": "gitignore",
+    ".dockerignore": "gitignore",
+    ".editorconfig": "ini",
+    ".eslintrc": "json",
+    ".prettierrc": "json",
+    "Cargo.toml": "toml",
+    "pyproject.toml": "toml",
+    "Pipfile": "toml",
+}
+
+
+def detect_language(file_path: str) -> str | None:
+    """Detect the syntax highlighting language from a file path.
+
+    Returns a Pygments language name or None if unknown.
+    """
+    p = Path(file_path)
+    # Check by exact filename first
+    if p.name in _FILENAME_LANG:
+        return _FILENAME_LANG[p.name]
+    # Check by extension
+    ext = p.suffix.lower()
+    if ext in _EXT_LANG:
+        return _EXT_LANG[ext]
+    # Handle double extensions like .t.css → css
+    if len(p.suffixes) >= 2:
+        double = "".join(p.suffixes[-2:]).lower()
+        if double in _EXT_LANG:
+            return _EXT_LANG[double]
+    return None
+
 if TYPE_CHECKING:
     from foreman.tokens.budget import TokenBudget
     from foreman.tokens.cost import SessionCost
@@ -86,6 +216,20 @@ class SubmitTextArea(TextArea):
 
     async def _on_key(self, event: Key) -> None:
         """Override to intercept Enter before TextArea processes it."""
+        if getattr(self.app, "input_locked", False):
+            if event.key in {"up", "down", "left", "right", "pageup", "pagedown", "home", "end"}:
+                event.prevent_default()
+                event.stop()
+                self.app.scroll_workspace(event.key)
+                return
+            if event.key in {"ctrl+b", "ctrl+e", "ctrl+o", "ctrl+d", "ctrl+s"}:
+                # Still allow global app shortcuts while generation is running.
+                pass
+            else:
+                # Ignore regular typing while locked.
+                event.prevent_default()
+                event.stop()
+                return
         if event.key == "shift+tab":
             event.prevent_default()
             event.stop()
@@ -115,6 +259,24 @@ class SubmitTextArea(TextArea):
             event.prevent_default()
             event.stop()
             self.app.action_save_open_file()
+            return
+        if event.key == "ctrl+z":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_undo"):
+                self.action_undo()
+            return
+        if event.key == "ctrl+y":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_redo"):
+                self.action_redo()
+            return
+        if event.key == "ctrl+a":
+            event.prevent_default()
+            event.stop()
+            if hasattr(self, "action_select_all"):
+                self.action_select_all()
             return
         if event.key == "ctrl+v":
             event.prevent_default()
@@ -402,7 +564,7 @@ class ChatPanel(VerticalScroll):
     """
 
     def add_user_message(self, content: str) -> None:
-        self.mount(Static(f"[bold blue]\u25b6 You[/]\n{content}", classes="msg msg-user"))
+        self.mount(Static(f"[bold blue]\u25b6 You[/]\n{escape(content)}", classes="msg msg-user"))
         self.scroll_end()
 
     def add_assistant_message(self, content: str) -> Static:
@@ -431,11 +593,11 @@ class ChatPanel(VerticalScroll):
         self.scroll_end()
 
     def add_error(self, content: str) -> None:
-        self.mount(Static(f"[bold red]\u2717 Error:[/bold red] {content}", classes="msg msg-error"))
+        self.mount(Static(f"[bold red]\u2717 Error:[/bold red] {escape(content)}", classes="msg msg-error"))
         self.scroll_end()
 
     def add_tool_call(self, content: str) -> None:
-        self.mount(Static(content, classes="msg-tool-call"))
+        self.mount(Static(escape(content), classes="msg-tool-call"))
         self.scroll_end()
 
     def add_tool_result(self, content: str) -> None:
@@ -449,7 +611,8 @@ class ChatPanel(VerticalScroll):
     def _colorize_diff(content: str) -> str:
         lines = content.splitlines()
         if not any(line.startswith(("--- ", "+++ ", "@@", "+", "-")) for line in lines):
-            return content
+            # Not a diff — escape all markup so brackets in tool output don't break rendering
+            return escape(content)
         colored: list[str] = []
         for line in lines:
             safe = escape(line)
@@ -578,10 +741,23 @@ class FilePreviewPanel(VerticalScroll):
         try:
             text = Path(path).read_text(encoding="utf-8")
             self._original_text = text
+            # Detect and apply syntax highlighting language
+            lang = detect_language(path)
+            if lang is not None:
+                try:
+                    editor.language = lang
+                except Exception:
+                    pass
+            else:
+                try:
+                    editor.language = None
+                except Exception:
+                    pass
             editor.text = text
             editor.remove_class("hidden")
             diff_view.add_class("hidden")
-            title.update(f"[bold]{Path(path).name}[/] [dim]{path}[/]")
+            lang_label = f" [dim]({lang})[/]" if lang else ""
+            title.update(f"[bold]{Path(path).name}[/]{lang_label} [dim]{path}[/]")
             editor.focus()
         except Exception as e:
             editor.add_class("hidden")

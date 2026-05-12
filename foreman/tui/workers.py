@@ -14,6 +14,7 @@ from foreman.compact.monitor import CompactMonitor
 from foreman.models.profiles import ModelProfile, resolve_profile
 from foreman.models.router import ModelRouter
 from foreman.tokens.counter import TokenCounter
+from rich.markup import escape as rich_escape
 from foreman.tokens.budget import TokenBudget
 from foreman.tools.definitions import TOOL_DEFINITIONS, execute_tool
 import subprocess
@@ -438,7 +439,7 @@ async def run_plan(app: "ForemanApp", feature_description: str) -> None:
     if session is None:
         return
 
-    app.chat_panel.add_system_message(f"[bold]Planning:[/] {feature_description}")
+    app.chat_panel.add_system_message(f"[bold]Planning:[/] {rich_escape(feature_description)}")
     app.update_status("⟐ Planning...")
 
     try:

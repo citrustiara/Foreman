@@ -16,7 +16,7 @@ from textual.widgets import Button, DirectoryTree, Footer, Header, Static
 from foreman.brain.session import Session, SessionStore, Message
 from foreman.brain.assembler import SYSTEM_PROMPT
 
-from foreman.brain.architecture import load_context_json, refresh_context_json
+from foreman.brain.architecture import refresh_context_json
 from foreman.compact.monitor import CompactMonitor
 from foreman.compact.summarizer import Summarizer
 from foreman.config import ForemanConfig
@@ -133,8 +133,9 @@ class ForemanApp(App):
         self.expand_tool_output = False
         self._open_file_path: Path | None = None
         self._file_preview_show_diff = False
-        self._context_panel_minimized = False
+        self._context_panel_minimized = True
         self._code_focus = False
+        self.input_locked = False
         self.session_modified_files: set[str] = set()
         self.session_file_diffs: dict[str, str] = {}
 
@@ -183,8 +184,6 @@ class ForemanApp(App):
         # Fetch OpenRouter models in background
         asyncio.create_task(self._refresh_models())
         asyncio.create_task(self._init_session())
-        if self.hydrate_context_on_start:
-            asyncio.create_task(self._maybe_refresh_project_context())
 
         self.chat_panel.add_system_message(
             f"[bold]Foreman v0.1.0[/] \u2014 Agentic Coding Assistant\n\n"
@@ -857,7 +856,7 @@ class ForemanApp(App):
     def update_status(self, text: str) -> None:
         self.sub_title = (
             f"{text} • think:{self.thinking_level} • "
-            f"tools:{'full' if self.expand_tool_output else 'compact'}"
+            f"tools:{'full args' if self.expand_tool_output else 'names only'}"
         )
 
     def update_context_stats(self) -> None:
@@ -967,28 +966,11 @@ class ForemanApp(App):
         self.chat_panel.add_system_message(f"[green]Saved[/] {self._to_repo_path(Path(event.path))}")
         self.update_status(f"○ Saved: {Path(event.path).name}")
 
-    async def _maybe_refresh_project_context(self) -> None:
-        """Hydrate .foreman/context.json in the background if empty/stale."""
-        try:
-            context = await load_context_json(self.foreman_dir)
-            has_data = bool(context.get("summary")) or bool(context.get("modules")) or bool(context.get("flows"))
-            if has_data:
-                return
-            await refresh_context_json(
-                repo_root=self.repo_root,
-                foreman_dir=self.foreman_dir,
-                router=self.router,
-                summary_model=self.secondary_profile,
-            )
-            self.update_context_stats()
-            if self.chat_panel:
-                self.chat_panel.add_system_message("[dim]Hydrated .foreman/context.json in background.[/]")
-        except Exception as e:
-            logger.warning("Background context refresh failed: %s", e)
-
     # ─── Actions ────────────────────────────────────────────────────
 
     def action_interrupt(self) -> None:
+        if self.input_locked:
+            self.set_input_enabled(True)
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
             self.chat_panel.add_system_message("[yellow]Interrupted.[/]")
@@ -1024,18 +1006,44 @@ class ForemanApp(App):
         self.exit()
 
     def set_input_enabled(self, enabled: bool) -> None:
-        """Enable/disable the input field; focus chat while generating."""
+        """Lock/unlock message submission while keeping UI navigation responsive."""
         if not self.input_bar:
             return
         try:
             ta = self.input_bar.query_one("#input-area", SubmitTextArea)
-            ta.disabled = not enabled
+            self.input_locked = not enabled
+            ta.disabled = False
+            ta.read_only = self.input_locked
             if enabled:
                 ta.focus()
             elif self.chat_panel:
                 self.chat_panel.focus()
         except Exception:
             pass
+
+    def scroll_workspace(self, key: str) -> None:
+        """Scroll a useful panel when input is locked and nav keys are pressed."""
+        target = self.chat_panel
+        if self.file_preview and self.file_preview.has_focus_within:
+            target = self.file_preview
+        if not target:
+            return
+        mapping = {
+            "up": "action_scroll_up",
+            "down": "action_scroll_down",
+            "left": "action_scroll_left",
+            "right": "action_scroll_right",
+            "pageup": "action_page_up",
+            "pagedown": "action_page_down",
+            "home": "action_scroll_home",
+            "end": "action_scroll_end",
+        }
+        action_name = mapping.get(key)
+        if not action_name:
+            return
+        action = getattr(target, action_name, None)
+        if callable(action):
+            action()
 
     def _to_repo_path(self, path: Path | None) -> str:
         if path is None:

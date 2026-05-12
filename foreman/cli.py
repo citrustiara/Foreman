@@ -106,7 +106,7 @@ def main() -> None:
     repo_root = Path(args.repo) if getattr(args, "repo", None) else Path.cwd()
 
     if args.command == "start":
-        _run_tui(repo_root, hydrate_context_on_start=True)
+        _run_tui(repo_root, hydrate_context_on_start=False)
     elif args.command == "init":
         _run_init(repo_root)
     elif args.command == "config":
