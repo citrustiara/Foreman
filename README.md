@@ -74,8 +74,6 @@ foreman/
   init.py        Project scaffold (.foreman/)
 ```
 
-See [PLAN.md](PLAN.md) for the full implementation plan.
-
 ## Dependencies
 
 - `tiktoken` — local token counting

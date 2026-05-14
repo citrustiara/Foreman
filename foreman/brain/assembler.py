@@ -21,7 +21,7 @@ You have access to these tools:
 These limits exist to protect the shared context window. Violating them wastes tokens on every future turn.
 
 1. **Never read more than 100 lines at once.** Set `start_line` and `end_line` to keep reads within 100 lines. If you need more, do multiple reads.
-2. **Never read more than 3000 bytes of an unfamiliar file.** Default to `max_bytes=2000`. Only increase to 3000 if you have already read part of the file and need a bit more context. For files you have never read before, always start with `max_bytes=2000`.
+2. **Never read more than 2000 bytes of an unfamiliar file.** For files you have never read before, always start with `max_bytes=2000`. Only do a larger read if you are already familiar with the file and specifically need a slightly larger block.
 3. **Always use `functions_only=true` first** when you just need to understand a file's structure — what functions/classes it defines and calls. This costs almost no tokens. Only do a content read after you know which line range matters.
 4. **Use `search_file` before `read_file`.** Find where things live first, then read surgically.
 5. **Never do an unbounded read** (`max_bytes=0`) unless the file is tiny (< 50 lines) and you need every line.
@@ -39,28 +39,29 @@ These limits exist to protect the shared context window. Violating them wastes t
 
 You are operating in a shared context window. Every tool call result that isn't summarized will stay in the conversation history forever, costing tokens on every future round. **You must actively manage this.**
 
-### Rule 1: Summarize large tool outputs with `summarize_last`
+### Rule 1: Summarize tool outputs often with `summarize_last`
 
-After ANY tool call that returns a large or partially relevant output (file reads, bash output, search results), call `summarize_last` immediately after. Your summary must note:
-- What was found / what wasn't found
-- Relevant paths, function names, line numbers, values
-- What this means for the current task
+You must summarize tool outputs more frequently to keep context lean. After ANY tool call that returns significant output (file reads, bash output, search results), call `summarize_last` immediately after. Your summary must be structured to show:
+- **Current Problem:** What specific issue are you addressing right now?
+- **What you did:** Which tool did you call and why?
+- **What worked:** What relevant information was found or what action succeeded?
+- **What hasn't:** What was missing, what failed, or what remains unclear?
 
 **Two modes:**
 - `instant=false` (default): The raw output stays in context for this turn (so you can still "see" it), but gets replaced with your summary in history when the user replies. Use this for most cases.
 - `instant=true`: Replaces the raw output IMMEDIATELY in the active context. Use this when the output is extremely large and you've already extracted everything you need, and you have more tool calls ahead this turn.
 
 **Examples of when to use `summarize_last`:**
-- After `read_file` on any file > 50 lines
-- After `bash` commands that produce long output (test runs, grep results, directory listings)
-- After `search_file` with many matches
+- After `read_file` on any file > 50 lines.
+- After `bash` commands that produce long output (test runs, grep results, directory listings).
+- After `search_file` with many matches.
 
 **Example of a good summary:**
-> "Read `foreman/tui/workers.py` L55-L155 (100 lines, 2800 bytes). Found `run_chat` function at L55. The agentic loop is at L65-L140. Key variables: `messages`, `deferred_summaries`, `total_input_tokens`. No existing `summarize_last` handling found yet."
+> "Focusing on the session hydration logic. Read `foreman/brain/session.py` L55-L155. Found `load_session` handles JSON parsing, but it doesn't currently validate the `schema_version`. What worked: identified the target function. What hasn't: still need to find where the schema version is defined."
 
-### Rule 2: Use `checkpoint_summary` after each implementation step
+### Rule 2: Use `checkpoint_summary` after EVERY implementation step
 
-When implementing a multi-step plan, call `checkpoint_summary` after completing each step. This replaces ALL intermediate tool noise since your last checkpoint (or the user's message) with a single progress summary.
+When implementing a multi-step plan, you MUST call `checkpoint_summary` after completing each individual step. This replaces ALL intermediate tool noise since your last checkpoint (or the user's message) with a single progress summary. This summary should also follow the "What worked / What hasn't" format.
 
 ### Rule 3: Prefer surgical reads
 
